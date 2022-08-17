@@ -1,9 +1,10 @@
+import datetime
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-import sys
 import subprocess
-import datetime
+import sys
+from dataclasses import dataclass
+import re
 from operator import attrgetter
 
 if 'uncertainties' not in sys.modules:
@@ -98,6 +99,10 @@ class Point3d:
     def nan():
         return Point3d(np.nan, np.nan, np.nan)
 
+    @staticmethod
+    def origin():
+        return Point3d(0, 0, 0)
+
 
 @dataclass
 class Line3d:
@@ -118,7 +123,7 @@ class Line3d:
 
     @property
     def v(self):
-        return hpot(self.a, self.b, self.z)
+        return hpot(self.a, self.b, self.c)
 
     @property
     def constants(self):
@@ -149,8 +154,8 @@ class Line3d:
 
 @dataclass
 class Sphere:
-    center: Point3d
     radius: ufloat
+    center: Point3d = Point3d.origin()
 
     def intercept_line3d(self, line: Line3d):
         a, b, c, x0, y0, z0 = line.constants
@@ -190,25 +195,46 @@ class Sphere:
 class Degree:
     degree: int
     minutes: int
-    secounds: int = 0
+    seconds: int = 0
     fraction: int = 0
+    measurement_error: float = 0
 
     def __repr__(self):
-        return f'{self.degree}°{self.minutes}\'{self.secounds}.{self.fraction}\"'
-    @property
-    def error(self):
-        if self.minutes == 0:
-            return 1/60.0
-        else:
-            return 1/3600.0
+        return f'{self.degree}°{self.minutes}\'{self.seconds}.{self.fraction}\"'
 
     @property
-    def angle(self):
-        frac = float(f'{self.secounds}.{self.fraction}')
+    def error(self):
+        if self.minutes == 0 and self.seconds == 0 and self.fraction == 0:
+            return max(1 / 60.0, self.measurement_error)
+        elif self.seconds == 0 and self.fraction == 0:
+            return max(1 / 3600.0, self.measurement_error)
+        else:
+            return max(1 / 3600_000.0, self.measurement_error)
+
+    @property
+    def angle_degrees(self):
+        frac = float(f'{self.seconds}.{self.fraction}')
         return ufloat(
-            nominal_value=self.degree+self.minutes/60.0+frac/3600.0,
+            nominal_value=self.degree + self.minutes / 60.0 + frac / 3600.0,
             std_dev=self.error
         )
+
+    @property
+    def angle_radian(self):
+        return self.angle_degrees * np.pi / 180.0
+
+    @staticmethod
+    def from_string(string: str):
+        numbers_str = re.split(r'\D+', string)
+        for _ in range(len(numbers_str) - 4):
+            numbers_str.append("0")
+        return Degree(
+            degree=int(numbers_str[0]),
+            minutes=int(numbers_str[0]),
+            seconds=int(numbers_str[0]),
+            fraction=int(numbers_str[0])
+        )
+
 
 @dataclass
 class Location:
@@ -216,27 +242,28 @@ class Location:
     Longitude: Degree
     EarthRadius: ufloat = uncertainty_between(6_378_137.000, 6_356_752.314)
 
-
     @property
     def point(self):
-        lat = self.Latitude.angle * np.pi / 180
-        lng = self.Longitude.angle * np.pi / 180
+        lat = self.Latitude.angle_radian
+        lng = self.Longitude.angle_radian
         return Point3d.from_spherical(self.EarthRadius, lng, lat - np.pi / 2)
 
+    @property
+    def sphere(self):
+        return Sphere(radius=self.EarthRadius)
 
     @staticmethod
     def from_string(string: str):
-
-
-
-
-
-
-class Earth:
-    def __init__(self):
-        self.sphere = Sphere(
-            center=Point3d(0, 0, 0),
-            radius=
+        latitude_str, longitude_str = string.split('N')
+        return Location(
+            Latitude=Degree.from_string(latitude_str),
+            Longitude=Degree.from_string(longitude_str)
         )
 
-    def location(self, lat, lon):
+    def distance(self, other):
+        p0 = self.point
+        p1 = other.point
+        return self.sphere.arc_distance(p0, p1)
+
+
+
