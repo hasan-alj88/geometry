@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 import re
 from operator import attrgetter
+from typing import Tuple, List
 
 if 'uncertainties' not in sys.modules:
     subprocess.call(['pip', 'install', 'uncertainties'])
@@ -112,6 +113,11 @@ class Point3d:
     def get_spherical(self):
         return self.r, self.theta, self.phi
 
+    @property
+    def normalized(self):
+        r, theta, phi = self.get_spherical
+        return Point3d.from_spherical(r=1, theta=theta, phi=phi)
+
     def __add__(self, other):
         x0, y0, z0 = self.get_cartesian
         x1, y1, z1 = other.get_cartesian
@@ -183,6 +189,11 @@ class Line3d:
         return UfloatOP.hypotenuse(self.a, self.b, self.c)
 
     @property
+    def vector(self):
+        a, b, c, x0, y0, z0 = self.constants
+        return Point3d(x=a, y=b, z=c)
+
+    @property
     def constants(self):
         return self.a, self.b, self.c, self.p0.x, self.p0.y, self.p0.z
 
@@ -207,6 +218,13 @@ class Line3d:
         dt = length / self.v
         t = (point.x - self.p0.x) / self.a
         return self.point_at(t + dt)
+
+    @staticmethod
+    def from_point_and_vector(point: Point3d, vector: Point3d):
+        return Line3d(
+            p0=point,
+            p1=point + vector.normalized
+        )
 
 
 @dataclass
@@ -268,6 +286,16 @@ class Degree:
             error_str = ""
         return f' {self.degree}°{self.minutes}\'{self.seconds:.6f}\"{error_str} '
 
+    def __add__(self, other):
+        ang1 = self.angle_degrees(self.angle_degrees, degrees=True)
+        ang2 = self.angle_degrees(other.angle_degrees, degrees=True)
+        return Degree.from_uflloat((ang1 + ang2) % 360, degrees=True)
+
+    def __sub__(self, other):
+        ang1 = self.angle_degrees(self.angle_degrees, degrees=True) % 360
+        ang2 = self.angle_degrees(other.angle_degrees, degrees=True) % 360
+        return Degree.from_uflloat((ang1 - ang2) % 360, degrees=True)
+
     @property
     def error(self):
         if self.minutes == 0 and self.seconds == 0:
@@ -278,14 +306,14 @@ class Degree:
             return max(1 / 3600_000.0, self.measurement_error)
 
     @property
-    def angle_degrees(self):
+    def angle_degrees(self) -> ufloat:
         return ufloat(
             nominal_value=self.degree + self.minutes / 60.0 + self.seconds / 3600.0,
             std_dev=self.error
         )
 
     @property
-    def angle_radian(self):
+    def angle_radian(self) -> ufloat:
         return self.angle_degrees * np.pi / 180.0
 
     @staticmethod
@@ -355,24 +383,39 @@ class Location:
             Longitude=Degree.from_uflloat(lng, degree)
         )
 
+    @property
+    def to_float_tuple(self):
+        lat, lon = self.Latitude.angle_degrees.nominal_value, self.Longitude.angle_degrees.nominal_value
+        lat = lat if -90 < lat < 90 else lat % 360
+        lat = lat if -90 < lat < 90 else lat - 360
+        lon = lon if -180 < lon < 180 else lon % 360
+        lon = lon if -180 < lon < 180 else lon - 360
+        return lat, lon
+
     def distance(self, other):
         p0 = self.point
         p1 = other.point
         return self.sphere.arc_distance(p0, p1)
+
+    @property
+    def url(self):
+        lat, lon = self.to_float_tuple
+        lat, lon = round(lat, 6), round(lon, 6)
+        return f"https://www.google.com/maps/place/{lat},{lon}"
 
 
 @dataclass
 class Sun:
     distance_from_earth: ufloat = UfloatOP.from_minmax(1.47098074 * 10 ** 11, 1.52097701 * 10 ** 11)
 
-    def subsolar(self, utc) -> Location:
+    @staticmethod
+    def subsolar(utc) -> Location:
         """
         https://medium.com/swlh/is-the-earth-flat-check-for-yourself-2735039b15ea
         :param utc:
         :return:
         """
         ye, mo, da, ho, mi, se = utc
-        ta = np.pi * 2
         ut = ho + mi / 60 + se / 3600
         t = 367 * ye - 7 * (ye + (mo + 9) // 12) // 4
         dn = t + 275 * mo // 9 + da - 730531.5 + ut / 24
@@ -399,5 +442,68 @@ class Sun:
         return self.subsolar(d_tuple)
 
 
+@dataclass
+class Plane3d:
+    a: ufloat
+    b: ufloat
+    c: ufloat
+    d: ufloat
+
+    @property
+    def constants(self):
+        return self.a, self.b, self.c, self.d
+
+    def is_on_plane(self, point: Point3d) -> bool:
+        a, b, c, d = self.constants
+        x, y, z = point.get_cartesian
+        return a * x + b * y + c * z + d == 0
+
+    @staticmethod
+    def from_3points(p0: Point3d, p1: Point3d, p2: Point3d):
+        p0_xyz = list(p0.get_cartesian)
+        p0_xyz.append(1)
+        p1_xyz = list(p1.get_cartesian)
+        p1_xyz.append(1)
+        p2_xyz = list(p2.get_cartesian)
+        p2_xyz.append(1)
+        lhs = np.array([p0_xyz, p1_xyz, p2_xyz])
+        a, b, c, d = np.linalg.solve(lhs, np.zeros(3))
+        return Plane3d(a=a, b=b, c=c, d=d)
+
+    @property
+    def normal(self):
+        a, b, c, d = self.constants
+        return Point3d(x=a, y=b, z=c).normalized
+
+    def line3d_interception(self, line: Line3d):
+        norm = self.normal
+        if norm.dot(line.vector) == 0:
+            return Point3d.nan()
+        a, b, c, d = self.constants
+        t = - (norm.dot(line.p0) + d) / norm.dot(line.vector)
+        return line.point_at(t=t)
+
+    @staticmethod
+    def from_point_and_normal(point: Point3d, normal: Point3d):
+        a, b, c = normal.get_cartesian
+        d = - point.dot(normal)
+        return Plane3d(a=a, b=b, c=c, d=d)
+
+
+@dataclass
+class FlattenSphere:
+    origin: Location
+    sphere: Sphere
+
+    @property
+    def plane(self):
+        return Plane3d.from_point_and_normal(self.origin.point, self.origin.point - self.sphere.center)
+
+    def projection(self, point: Point3d) -> Point3d:
+        line = Line3d.from_point_and_vector(point=point, vector=self.plane.normal)
+        return self.plane.line3d_interception(line=line)
+
+
 sun = Sun()
-print(sun.subsolar_now)
+print(sun.subsolar_now.to_float_tuple)
+print(sun.subsolar_now.url)
