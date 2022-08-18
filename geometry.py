@@ -150,21 +150,21 @@ class Point3d:
         distances = [self.distance(point) for point in points]
         return points[np.argmin(distances)]
 
-    @staticmethod
-    def from_spherical(r, theta, phi):
-        return Point3d(
+    @classmethod
+    def from_spherical(cls, r, theta, phi):
+        return cls(
             x=r * umath.cos(phi) * umath.sin(theta),
             y=r * umath.sin(phi) * umath.sin(theta),
             z=r * umath.cos(theta)
         )
 
-    @staticmethod
-    def nan():
-        return Point3d(np.nan, np.nan, np.nan)
+    @classmethod
+    def nan(cls):
+        return cls(np.nan, np.nan, np.nan)
 
-    @staticmethod
-    def origin():
-        return Point3d(0, 0, 0)
+    @classmethod
+    def origin(cls):
+        return cls(0, 0, 0)
 
 
 @dataclass
@@ -219,9 +219,9 @@ class Line3d:
         t = (point.x - self.p0.x) / self.a
         return self.point_at(t + dt)
 
-    @staticmethod
-    def from_point_and_vector(point: Point3d, vector: Point3d):
-        return Line3d(
+    @classmethod
+    def from_point_and_vector(cls, point: Point3d, vector: Point3d):
+        return cls(
             p0=point,
             p1=point + vector.normalized
         )
@@ -250,8 +250,7 @@ class Sphere:
         return line.point_at(t1), line.point_at(t2)
 
     def is_on_sphere(self, point: Point3d) -> bool:
-        dx, dy, dz = (self.center - point).get_cartesian
-        return UfloatOP.hypotenuse(dx, dy, dz) == self.radius
+        return (self.center - point).r == self.radius
 
     def arc_distance(self, p0: Point3d, p1: Point3d) -> ufloat:
         if not self.is_on_sphere(p0):
@@ -298,7 +297,7 @@ class Degree:
 
     @property
     def error(self):
-        if self.minutes == 0 and self.seconds == 0:
+        if self.minutes == 0 and self.seconds == 0 and self.degree != 90:
             return max(1 / 60.0, self.measurement_error)
         elif self.seconds == 0:
             return max(1 / 3600.0, self.measurement_error)
@@ -316,12 +315,12 @@ class Degree:
     def angle_radian(self) -> ufloat:
         return self.angle_degrees * np.pi / 180.0
 
-    @staticmethod
-    def from_string(string: str):
+    @classmethod
+    def from_string(cls, string: str):
         numbers_str = re.split(r'\D+', string)
         for _ in range(len(numbers_str) - 4):
             numbers_str.append("0")
-        return Degree(
+        return cls(
             degree=int(numbers_str[0]),
             minutes=int(numbers_str[0]),
             seconds=float(numbers_str[0])
@@ -334,14 +333,14 @@ class Degree:
         seconds = number - (degree + minutes / 60.0)
         return degree, minutes, seconds
 
-    @staticmethod
-    def from_uflloat(angle: ufloat, degrees: bool = True):
+    @classmethod
+    def from_uflloat(cls, angle: ufloat, degrees: bool = True):
         full_circle = 360 if degrees else 2.0 * np.pi
         error = angle.std_dev
         ang = angle.nominal_value % full_circle
         ang = ang if degrees else ang * 180 / np.pi
         degree, minutes, seconds = Degree.sexagesimal(ang)
-        return Degree(
+        return cls(
             degree=degree,
             minutes=minutes,
             seconds=seconds,
@@ -368,20 +367,31 @@ class Location:
     def sphere(self):
         return Sphere(radius=self.EarthRadius)
 
-    @staticmethod
-    def from_string(string: str):
+    @classmethod
+    def from_string(cls, string: str):
         latitude_str, longitude_str = string.split('N')
-        return Location(
+        return cls(
             Latitude=Degree.from_string(latitude_str),
             Longitude=Degree.from_string(longitude_str)
         )
 
-    @staticmethod
-    def from_float_tuple(lat: ufloat, lng: ufloat, degree=True):
-        return Location(
+    @classmethod
+    def from_float_tuple(cls, lat: ufloat, lng: ufloat, degree=True):
+        return cls(
             Latitude=Degree.from_uflloat(lat, degree),
             Longitude=Degree.from_uflloat(lng, degree)
         )
+
+    @classmethod
+    def north_pole(cls):
+        north = cls.from_string("90°00\'00\" N 135°00\'00\" W")
+        north.Latitude.measurement_error = 1 / 3600
+        north.Longitude.measurement_error = 1 / 3600
+        return north
+
+    @classmethod
+    def north_by(cls, point: Point3d, length: ufloat):
+
 
     @property
     def to_float_tuple(self):
@@ -404,7 +414,6 @@ class Location:
         return f"https://www.google.com/maps/place/{lat},{lon}"
 
 
-@dataclass
 class Sun:
     distance_from_earth: ufloat = UfloatOP.from_minmax(1.47098074 * 10 ** 11, 1.52097701 * 10 ** 11)
 
@@ -504,6 +513,35 @@ class FlattenSphere:
         return self.plane.line3d_interception(line=line)
 
 
+@dataclass
+class Stick:
+    location: Location
+    length: ufloat
+
+    @property
+    def base_point(self) -> Point3d:
+        return self.location.point
+
+    @property
+    def stick_line(self) -> Line3d:
+        return Line3d(p0=Point3d.origin(), p1=self.base_point)
+
+    @property
+    def stick_tip(self) -> Point3d:
+        return self.stick_line.after_by_length(point=self.base_point, length=self.length)
+
+@dataclass
+class SickShadowBySun:
+    stick: Stick
+    sun_location: Point3d
+
+    @property
+    def shadow_tip(self):
+        line = Line3d(p0=self.sun_location, p1=self.stick.stick_tip)
+        shadow_p = self.stick.location.sphere.intercept_line3d(line=line)
+        return self.stick.base_point.closest(list(shadow_p))
+
+
+
 sun = Sun()
-print(sun.subsolar_now.to_float_tuple)
 print(sun.subsolar_now.url)
