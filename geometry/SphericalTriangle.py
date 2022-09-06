@@ -248,8 +248,12 @@ class SphericalTriangle:
             # s = (a+b+c)/2
             self.gamma = tan_rule(side1=self.gamma, angle1=self.c_radian, angle2=self.a_radian, angle3=self.b_radian)
 
+        if not self.no_nan:
+            raise ValueError(f'Not enough values provided to calculate the triangle\n{self}')
+
     def __repr__(self):
-        out = f'r = {self.r}\n'
+        out = '________SphericalTriangle_________\n'
+        out += f'r = {self.r}\n'
         out += f'a = {self.a}\n'
         out += f'b = {self.b}\n'
         out += f'c = {self.c}\n'
@@ -259,6 +263,7 @@ class SphericalTriangle:
         out += f'alpha = {self.alpha}\n'
         out += f'β = {self.beta}\n'
         out += f'γ = {self.gamma}\n'
+        out = '_________________________________\n'
         return out
 
     @property
